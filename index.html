@@ -37,6 +37,17 @@ h1 b{font-size:1.45em;font-weight:700;color:#e6e9f2;letter-spacing:-.02em}
 .lock button:hover{background:#2c3549}
 .lock button:disabled{opacity:.5;cursor:default}
 .lock p{margin:0;min-height:1.4em;font-size:14px;color:#c98a8a}
+.lock.busy p{color:#9aa4bd;display:flex;align-items:center;gap:8px}
+.lock.busy p::before{content:"";width:12px;height:12px;border:2px solid #2a3142;border-top-color:#a9bcff;border-radius:50%;animation:spin .8s linear infinite}
+/* per-slot loading spinner while a file downloads / decrypts */
+.slot{position:relative}
+.loading{position:relative}
+.loading::after{content:"";position:absolute;left:50%;top:50%;width:28px;height:28px;margin:-24px 0 0 -16px;border:2px solid #2a3142;border-top-color:#a9bcff;border-radius:50%;animation:spin .8s linear infinite}
+.loading::before{content:attr(data-label);position:absolute;left:0;right:0;top:50%;margin-top:16px;text-align:center;font-size:12px;letter-spacing:.06em;color:#6b7690}
+.loading.failed::after{display:none}
+.loading.failed::before{color:#c98a8a;margin-top:-6px}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.loading::after,.lock.busy p::before{animation-duration:2.4s}}
 </style>
 </head>
 <body>
@@ -52,8 +63,12 @@ h1 b{font-size:1.45em;font-weight:700;color:#e6e9f2;letter-spacing:-.02em}
     <p id="msg" role="status"></p>
   </form>
   <section class="gallery" id="gallery" hidden>
-    <div class="vid"><video width="850" height="478" autoplay muted loop playsinline controls></video></div>
-    <div class="row"><img alt=""><img alt=""><img alt=""></div>
+    <div class="vid loading"><video width="850" height="478" autoplay muted loop playsinline controls></video></div>
+    <div class="row">
+      <div class="slot loading"><img alt=""></div>
+      <div class="slot loading"><img alt=""></div>
+      <div class="slot loading"><img alt=""></div>
+    </div>
   </section>
 </main>
 <script>
@@ -62,15 +77,28 @@ h1 b{font-size:1.45em;font-weight:700;color:#e6e9f2;letter-spacing:-.02em}
   const $ = id => document.getElementById(id), S = crypto.subtle;
   $('lock').addEventListener('submit', async e => {
     e.preventDefault();
-    $('go').disabled = true; $('msg').textContent = 'Unlocking…';
+    $('go').disabled = true; $('msg').textContent = 'Unlocking…'; $('lock').classList.add('busy');
     try {
       const { salt, iter } = await (await fetch('locked/key.json')).json();
       const key = await S.deriveKey(
         { name: 'PBKDF2', salt: Uint8Array.from(atob(salt), c => c.charCodeAt(0)), iterations: iter, hash: 'SHA-256' },
         await S.importKey('raw', new TextEncoder().encode($('pin').value), 'PBKDF2', false, ['deriveKey']),
         { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
-      const dec = async n => {
-        const b = new Uint8Array(await (await fetch('locked/' + n + '.bin')).arrayBuffer());
+      // download (reporting progress if asked), then decrypt
+      const dec = async (n, onp) => {
+        const r = await fetch('locked/' + n + '.bin');
+        if (!r.ok) throw new Error(r.status);
+        const total = +r.headers.get('content-length') || 0, parts = [];
+        let got = 0;
+        if (onp && total && r.body) {
+          const rd = r.body.getReader();
+          for (;;) {
+            const { done, value } = await rd.read();
+            if (done) break;
+            parts.push(value); got += value.length; onp(Math.min(1, got / total));
+          }
+        } else parts.push(new Uint8Array(await r.arrayBuffer()));
+        const b = new Uint8Array(await new Blob(parts).arrayBuffer());
         return S.decrypt({ name: 'AES-GCM', iv: b.subarray(0, 12) }, key, b.subarray(12));
       };
       let list;
@@ -80,14 +108,21 @@ h1 b{font-size:1.45em;font-weight:700;color:#e6e9f2;letter-spacing:-.02em}
       const imgs = $('gallery').querySelectorAll('img'), video = $('gallery').querySelector('video');
       let k = 0;
       list.forEach(async m => {
-        const el = m.slot === 'video' ? video : imgs[k++];
-        if (m.alt) el.alt = m.alt;
-        el.src = URL.createObjectURL(new Blob([await dec(m.id)], { type: m.type }));
+        const el = m.slot === 'video' ? video : imgs[k++], box = el.parentElement;
+        const label = t => box.dataset.label = t;
+        label(m.slot === 'video' ? 'loading 0%' : 'decrypting');
+        try {
+          const data = await dec(m.id, m.slot === 'video' && (p => label(p < 1 ? `loading ${Math.round(p * 100)}%` : 'decrypting')));
+          label('decrypting');
+          el.addEventListener(m.slot === 'video' ? 'loadeddata' : 'load', () => box.classList.remove('loading'), { once: true });
+          if (m.alt) el.alt = m.alt;
+          el.src = URL.createObjectURL(new Blob([data], { type: m.type }));
+        } catch { box.classList.add('failed'); label('failed to load'); }
       });
     } catch (err) {
       $('msg').textContent = err === 'pin' ? 'Wrong PIN' : 'Could not load media. Open the page through a web server (https or localhost), not as a file.';
       $('go').disabled = false; $('pin').select();
-    }
+    } finally { $('lock').classList.remove('busy'); }
   });
 })();
 </script>
