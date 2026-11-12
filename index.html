@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Demo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+html,body{margin:0;background:#0b0d12;color:#e6e9f2;font-family:"JetBrains Mono",ui-monospace,Consolas,monospace}
+#bg{position:fixed;inset:0;width:100%;height:100%;display:block}
+main{position:relative;z-index:1;max-width:1100px;margin:0 auto;padding:32px 16px 48px;display:flex;flex-direction:column;gap:16px;box-sizing:border-box}
+h1{margin:0;display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 16px;font-weight:400;font-size:clamp(14px,1.5vw,17px);color:#9aa4bd}
+h1 b{font-size:1.45em;font-weight:700;color:#e6e9f2;letter-spacing:-.02em}
+.gallery{display:flex;flex-direction:column;gap:32px;min-height:0;flex:1;width:100%;max-width:900px;margin:16px auto 0}
+.gallery video,.gallery img{display:block;border-radius:16px;background:#151925;object-fit:cover}
+.vid{display:flex;justify-content:center;min-height:0;flex:1}
+.gallery video{width:100%;aspect-ratio:850/478;max-height:100%}
+.row{display:grid;grid-template-columns:repeat(3,1fr);gap:32px}
+.row img{width:100%;height:clamp(120px,20vh,220px)}
+/* desktop: fit everything in one screen, no scrolling */
+@media (min-width:701px){
+  html,body{height:100%;overflow:hidden}
+  main{height:100%}
+  .gallery video{width:auto;height:100%;max-width:100%}
+}
+@media (max-width:700px){.row{grid-template-columns:1fr}.row img{height:auto;aspect-ratio:4/3}}
+[hidden]{display:none!important}
+.lock{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px}
+.lock label{font-size:14px;color:#9aa4bd;letter-spacing:.08em;text-transform:uppercase}
+.pinrow{display:flex;gap:8px}
+.lock input,.lock button{font:inherit;font-size:18px;border-radius:12px;border:1px solid #2a3142;padding:10px 14px;background:#151925;color:#e6e9f2}
+.lock input{width:9ch;text-align:center;letter-spacing:.3em}
+.lock input:focus{outline:2px solid #6b7fb8;outline-offset:1px}
+.lock button{cursor:pointer;background:#232a3b}
+.lock button:hover{background:#2c3549}
+.lock button:disabled{opacity:.5;cursor:default}
+.lock p{margin:0;min-height:1.4em;font-size:14px;color:#c98a8a}
+</style>
+</head>
+<body>
+<canvas id="bg"></canvas>
+<main>
+  <h1><b>Demo</b><span>drop-in replacement of reprocessed rare earth permanent magnets in robotic actuator</span></h1>
+  <form class="lock" id="lock" autocomplete="off">
+    <label for="pin">Enter PIN</label>
+    <div class="pinrow">
+      <input id="pin" type="password" inputmode="numeric" maxlength="32" required autofocus>
+      <button id="go">Unlock</button>
+    </div>
+    <p id="msg" role="status"></p>
+  </form>
+  <section class="gallery" id="gallery" hidden>
+    <div class="vid"><video width="850" height="478" autoplay muted loop playsinline controls></video></div>
+    <div class="row"><img alt=""><img alt=""><img alt=""></div>
+  </section>
+</main>
+<script>
+// PIN unlock: media in locked/ is AES-GCM encrypted with a key derived from the PIN (see demo-originals/encrypt.mjs)
+(() => {
+  const $ = id => document.getElementById(id), S = crypto.subtle;
+  $('lock').addEventListener('submit', async e => {
+    e.preventDefault();
+    $('go').disabled = true; $('msg').textContent = 'Unlocking…';
+    try {
+      const { salt, iter } = await (await fetch('locked/key.json')).json();
+      const key = await S.deriveKey(
+        { name: 'PBKDF2', salt: Uint8Array.from(atob(salt), c => c.charCodeAt(0)), iterations: iter, hash: 'SHA-256' },
+        await S.importKey('raw', new TextEncoder().encode($('pin').value), 'PBKDF2', false, ['deriveKey']),
+        { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+      const dec = async n => {
+        const b = new Uint8Array(await (await fetch('locked/' + n + '.bin')).arrayBuffer());
+        return S.decrypt({ name: 'AES-GCM', iv: b.subarray(0, 12) }, key, b.subarray(12));
+      };
+      let list;
+      try { list = JSON.parse(new TextDecoder().decode(await dec('manifest'))); }
+      catch { throw 'pin'; }
+      $('lock').hidden = true; $('gallery').hidden = false;
+      const imgs = $('gallery').querySelectorAll('img'), video = $('gallery').querySelector('video');
+      let k = 0;
+      list.forEach(async m => {
+        const el = m.slot === 'video' ? video : imgs[k++];
+        if (m.alt) el.alt = m.alt;
+        el.src = URL.createObjectURL(new Blob([await dec(m.id)], { type: m.type }));
+      });
+    } catch (err) {
+      $('msg').textContent = err === 'pin' ? 'Wrong PIN' : 'Could not load media. Open the page through a web server (https or localhost), not as a file.';
+      $('go').disabled = false; $('pin').select();
+    }
+  });
+})();
+</script>
+<script>
+(() => {
+  const cv = document.getElementById('bg'), cx = cv.getContext('2d');
+  // ---- tweak these (also live from the console: magnet.force = 5000) ----
+  const cfg = window.magnet = {
+    force: 10000,   // how strongly filings are pulled toward the mouse
+    reach: 600,    // radius of the mouse's influence in px
+  };
+  const GAP = 16;  // grid spacing
+  let W, H, N, px, py, vx, vy, hx, hy, dx0, dy0, qx, qy;
+  let mx = -1e5, my = -1e5, on = 0, pow = 0, boost = 1, running = false;
+
+  function init() {
+    const d = Math.min(devicePixelRatio || 1, 2);
+    W = innerWidth; H = innerHeight;
+    cv.width = W * d; cv.height = H * d;
+    cx.setTransform(d, 0, 0, d, 0, 0);
+    const cols = Math.ceil(W / GAP) + 1, rows = Math.ceil(H / GAP) + 1;
+    N = cols * rows;
+    px = new Float32Array(N); py = new Float32Array(N);
+    vx = new Float32Array(N); vy = new Float32Array(N);
+    hx = new Float32Array(N); hy = new Float32Array(N);
+    dx0 = new Float32Array(N); dy0 = new Float32Array(N);
+    qx = new Float32Array(N); qy = new Float32Array(N);
+    for (let i = 0; i < N; i++) {
+      const c = i % cols, r = (i / cols) | 0;
+      px[i] = hx[i] = c * GAP + (Math.random() - .5) * GAP * .8;
+      py[i] = hy[i] = r * GAP + (Math.random() - .5) * GAP * .8;
+      const a = Math.random() * Math.PI;
+      qx[i] = dx0[i] = Math.cos(a); qy[i] = dy0[i] = Math.sin(a);
+    }
+    wake();
+  }
+
+  function frame() {
+    pow += (on * boost - pow) * 0.08;
+    let energy = 0;
+    const R2 = cfg.reach * cfg.reach, F = cfg.force;
+    cx.clearRect(0, 0, W, H);
+    const path = new Path2D();
+
+    for (let i = 0; i < N; i++) {
+      let x = px[i], y = py[i], ax = (hx[i] - x) * 0.02, ay = (hy[i] - y) * 0.02;
+      const ox = qx[i], oy = qy[i];
+      // target orientation: resting angle (sign-matched to current, since a filing has no head/tail)
+      let tx = dx0[i], ty = dy0[i];
+      if (tx * ox + ty * oy < 0) { tx = -tx; ty = -ty; }
+      const ex = x - mx, ey = y - my, r2 = ex * ex + ey * ey;
+
+      if (pow > 0.002 && r2 < R2) {
+        const w = 1 - r2 / R2;                               // fades smoothly to 0 at the edge
+        // smooth attraction that vanishes at the centre: no hard core, no jitter
+        const s = r2 + 3600, f = pow * w * F /(s * Math.sqrt(s));
+        ax -= ex * f; ay -= ey * f;
+        // align like iron filings along a dipole field (magnet pointing up)
+        const r = Math.sqrt(r2) + 1e-3, ux = ex / r, uy = ey / r;
+        let bx = 3 * uy * ux, by = 3 * uy * uy - 1;
+        if (bx * ox + by * oy < 0) { bx = -bx; by = -by; }
+        const bl = Math.hypot(bx, by) || 1, k = Math.min(1, pow) * w;
+        tx += (bx / bl - tx) * k; ty += (by / bl - ty) * k;
+      }
+
+      // turn gradually toward the target instead of snapping
+      let nx = ox + (tx - ox) * 0.12, ny = oy + (ty - oy) * 0.12;
+      const nl = Math.hypot(nx, ny) || 1; nx /= nl; ny /= nl;
+      energy += Math.abs(nx - ox) + Math.abs(ny - oy);
+      qx[i] = nx; qy[i] = ny;
+
+      vx[i] = (vx[i] + ax) * 0.82; vy[i] = (vy[i] + ay) * 0.82;
+      x = px[i] += vx[i]; y = py[i] += vy[i];
+      energy += Math.abs(vx[i]) + Math.abs(vy[i]);
+
+      path.moveTo(x - nx * 3, y - ny * 3); path.lineTo(x + nx * 3, y + ny * 3);
+    }
+
+    cx.lineWidth = 1.3;
+    cx.strokeStyle = '#4a5570';
+    cx.stroke(path);
+
+    // go idle when everything has settled and the magnet is away
+    if (on || pow > 0.002 || energy > N * 0.002) requestAnimationFrame(frame);
+    else running = false;
+  }
+
+  function wake() { if (!running) { running = true; requestAnimationFrame(frame); } }
+
+  addEventListener('pointermove', e => { mx = e.clientX; my = e.clientY; on = 1; wake(); }, { passive: true });
+  addEventListener('pointerdown', e => { mx = e.clientX; my = e.clientY; on = 1; boost = 2; wake(); });
+  addEventListener('pointerup', e => { boost = 1; if (e.pointerType !== 'mouse') on = 0; });
+  document.addEventListener('mouseout', e => { if (!e.relatedTarget) { on = 0; boost = 1; } });
+  addEventListener('blur', () => { on = 0; boost = 1; });
+  let t; addEventListener('resize', () => { clearTimeout(t); t = setTimeout(init, 150); });
+  init();
+})();
+</script>
+</body>
+</html>
